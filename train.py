@@ -5,25 +5,25 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import string
 from model import CharGPT
+from tokenizer import CharTokenizer
+from tqdm import tqdm
 
 # ---------------------------
 # 1. Create a text dataset.
 # ---------------------------
 class CharDataset(Dataset):
-    def __init__(self, text, seq_length=50):
+    def __init__(self, text, tokenizer, seq_length=50):
         """
         A simple character-level dataset for next-character prediction.
 
         Args:
             text (str): The input text corpus.
+            tokenizer (CharTokenizer): The tokenizer to use for encoding.
             seq_length (int): The length of input sequences.
         """
         self.text = text
         self.seq_length = seq_length
-        self.vocab = list(string.printable)
-        self.vocab_size = len(self.vocab)
-        self.char_to_idx = {ch: i for i, ch in enumerate(self.vocab)}
-        self.idx_to_char = {i: ch for i, ch in enumerate(self.vocab)}
+        self.tokenizer = tokenizer
 
     def __len__(self):
         return len(self.text) - self.seq_length
@@ -35,76 +35,99 @@ class CharDataset(Dataset):
         input_text = self.text[idx: idx + self.seq_length]
         target_text = self.text[idx + 1: idx + self.seq_length + 1]  # Shift by 1
 
-        input_indices = torch.tensor([self.char_to_idx[ch] for ch in input_text], dtype=torch.long)
-        target_indices = torch.tensor([self.char_to_idx[ch] for ch in target_text], dtype=torch.long)
+        input_indices = torch.tensor(self.tokenizer.encode(input_text), dtype=torch.long)
+        target_indices = torch.tensor(self.tokenizer.encode(target_text), dtype=torch.long)
 
         return input_indices, target_indices
 
 # ---------------------------
 # 2. Training Function
 # ---------------------------
-def train_model(model, dataset, epochs=10, batch_size=64, lr=0.001, device='cpu'):
+def train_model(model, dataset, epochs=10, batch_size=16, lr=0.001, device='cpu', accumulation_steps=4):
     """
-    Trains the GPT-style model using character-level prediction.
-
-    Args:
-        model (nn.Module): The GPT-style transformer model.
-        dataset (Dataset): A dataset containing training text.
-        epochs (int): Number of epochs.
-        batch_size (int): Batch size.
-        lr (float): Learning rate.
-        device (str): Device ('cpu' or 'cuda').
+    Trains the GPT-style model using character-level prediction with gradient accumulation.
     """
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=dataset.tokenizer.special_tokens["<PAD>"])  # Ignore padding tokens
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     model.to(device)
     model.train()
 
-    for epoch in range(epochs):
+    epoch_pbar = tqdm(range(epochs), desc="Training")
+    
+    for epoch in epoch_pbar:
         total_loss = 0
-        for inputs, targets in dataloader:
+        optimizer.zero_grad()  # Zero gradients at start of epoch
+        
+        batch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", leave=False)
+        for i, (inputs, targets) in enumerate(batch_pbar):
             inputs, targets = inputs.to(device), targets.to(device)
-
-            optimizer.zero_grad()
-            outputs = model(inputs)  # (batch_size, seq_length, vocab_size)
             
-            # Reshape for cross-entropy: (batch_size * seq_length, vocab_size)
-            outputs = outputs.view(-1, dataset.vocab_size)
+            outputs = model(inputs)
+            # Reshape for cross entropy: (batch_size * seq_length, vocab_size)
+            outputs = outputs.view(-1, dataset.tokenizer.vocab_size)
             targets = targets.view(-1)
 
-            loss = criterion(outputs, targets)
+            loss = criterion(outputs, targets) / accumulation_steps
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Prevent exploding gradients
-            optimizer.step()
-
-            total_loss += loss.item()
+            
+            if (i + 1) % accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            total_loss += loss.item() * accumulation_steps
+            batch_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
+        epoch_pbar.set_postfix({"avg_loss": f"{avg_loss:.4f}"})
 
 # ---------------------------
 # 3. Running Training
 # ---------------------------
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Set device
+    device = torch.device("mps")
+    print(f"Using device: {device}")
 
-    # Load a sample text dataset (Replace this with real training data)
-    text_corpus = "This is a sample text corpus to train the character-level GPT model. " * 100
-    dataset = CharDataset(text_corpus, seq_length=50)
+    # Initialize tokenizer with all required languages
+    tokenizer = CharTokenizer(languages=['en', 'zh', 'ja'])
+    print(f"Vocabulary size: {tokenizer.vocab_size}")
 
-    # Model Hyperparameters
-    emb_size = 128
-    num_layers = 2
-    num_heads = 4
-    max_seq_length = 100
+    # Create training text that includes all character types
+    text_corpus = """
+    Hello, World! This is a sample text.
+    你好，世界！这是一个示例文本。
+    こんにちは世界！これはサンプルテキストです。
+    Simple words lead to simple thoughts.
+    复杂的词汇导致复杂的思维。
+    難しい言葉は難しい考えにつながる。
+    """ * 100  # Repeat to create more training data
 
-    model = CharGPT(len(dataset.vocab), emb_size, num_layers, num_heads, max_seq_length).to(device)
+    # Create dataset
+    dataset = CharDataset(text_corpus, tokenizer, seq_length=25)
 
-    # Train the model
-    train_model(model, dataset, epochs=10, batch_size=64, lr=0.001, device=device)
+    # Initialize model with correct vocabulary size
+    model = CharGPT(
+        vocab_size=tokenizer.vocab_size,
+        emb_size=128,
+        num_layers=2,
+        num_heads=4,
+        max_seq_length=100
+    ).to(device)
 
-    # Save the trained model
+    # Train model
+    print("\nStarting training...")
+    train_model(
+        model=model,
+        dataset=dataset,
+        epochs=20,
+        batch_size=32,
+        lr=0.001,
+        device=device
+    )
+
+    # Save model
     torch.save(model.state_dict(), "gpt_char_model.pth")
-    print("Model saved!")
+    print("\nModel saved to gpt_char_model.pth")

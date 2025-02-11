@@ -4,18 +4,10 @@ import torch.nn.functional as F
 import string
 
 # ---------------------------
-# 1. Define a simple character vocabulary.
-# ---------------------------
-vocab = list(string.printable)  # Using printable ASCII characters
-vocab_size = len(vocab)
-char_to_idx = {ch: i for i, ch in enumerate(vocab)}
-idx_to_char = {i: ch for i, ch in enumerate(vocab)}
-
-# ---------------------------
 # 2. Define a decoder-only GPT-like model.
 # ---------------------------
 class CharGPT(nn.Module):
-    def __init__(self, vocab_size, emb_size, num_layers, num_heads, max_seq_length=100):
+    def __init__(self, vocab_size, emb_size=128, num_layers=2, num_heads=4, max_seq_length=100):
         """
         GPT-style decoder-only transformer model for character prediction.
         

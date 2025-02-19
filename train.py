@@ -12,7 +12,7 @@ from tqdm import tqdm
 # 1. Create a text dataset.
 # ---------------------------
 class CharDataset(Dataset):
-    def __init__(self, text, tokenizer, seq_length=50):
+    def __init__(self, text, tokenizer, seq_length=25):
         """
         A simple character-level dataset for next-character prediction.
 
@@ -26,24 +26,52 @@ class CharDataset(Dataset):
         self.tokenizer = tokenizer
 
     def __len__(self):
-        return len(self.text) - self.seq_length
+        return len(self.text) - self.seq_length + 1
 
     def __getitem__(self, idx):
         """
         Returns an (input sequence, target sequence) pair.
         """
+        # Get the input and target text
         input_text = self.text[idx: idx + self.seq_length]
-        target_text = self.text[idx + 1: idx + self.seq_length + 1]  # Shift by 1
+        
+        # Ensure the target text does not exceed the length of the text
+        if idx + self.seq_length < len(self.text):
+            target_text = self.text[idx + 1: idx + self.seq_length + 1]  # Shift by 1
+        else:
+            target_text = self.text[idx + 1:]  # Take the remaining text if at the end
 
+        # Encode the input and target texts without special tokens
         input_indices = torch.tensor(self.tokenizer.encode(input_text), dtype=torch.long)
         target_indices = torch.tensor(self.tokenizer.encode(target_text), dtype=torch.long)
+
+        # Add <BOS> to the beginning of input_indices
+        input_indices = torch.cat((torch.tensor([self.tokenizer.special_tokens["<BOS>"]], dtype=torch.long), input_indices))
+
+        # Add <EOS> to the end of target_indices
+        target_indices = torch.cat((target_indices, torch.tensor([self.tokenizer.special_tokens["<EOS>"]], dtype=torch.long)))
+
+        # Adjust lengths after adding special tokens
+        input_length = len(input_indices)
+        target_length = len(target_indices)
+
+        # If the lengths exceed seq_length, truncate them
+        if input_length > self.seq_length:
+            input_indices = input_indices[:self.seq_length]
+        if target_length > self.seq_length:
+            target_indices = target_indices[:self.seq_length]
+
+        # After decoding
+        decoded_input = self.tokenizer.decode(input_indices)
+        decoded_target = self.tokenizer.decode(target_indices)
 
         return input_indices, target_indices
 
 # ---------------------------
 # 2. Training Function
 # ---------------------------
-def train_model(model, dataset, epochs=10, batch_size=16, lr=0.001, device='cpu', accumulation_steps=4):
+def train_model(model, dataset, epochs=10, batch_size=16, 
+                lr=0.001, device='cpu', accumulation_steps=4, save_model = True):
     """
     Trains the GPT-style model using character-level prediction with gradient accumulation.
     """
@@ -60,12 +88,10 @@ def train_model(model, dataset, epochs=10, batch_size=16, lr=0.001, device='cpu'
         total_loss = 0
         optimizer.zero_grad()  # Zero gradients at start of epoch
         
-        batch_pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", leave=False)
-        for i, (inputs, targets) in enumerate(batch_pbar):
+        for i, (inputs, targets) in enumerate(dataloader):
             inputs, targets = inputs.to(device), targets.to(device)
             
             outputs = model(inputs)
-            # Reshape for cross entropy: (batch_size * seq_length, vocab_size)
             outputs = outputs.view(-1, dataset.tokenizer.vocab_size)
             targets = targets.view(-1)
 
@@ -78,10 +104,14 @@ def train_model(model, dataset, epochs=10, batch_size=16, lr=0.001, device='cpu'
                 optimizer.zero_grad()
             
             total_loss += loss.item() * accumulation_steps
-            batch_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            # Update epoch progress bar with current loss
+            epoch_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         avg_loss = total_loss / len(dataloader)
         epoch_pbar.set_postfix({"avg_loss": f"{avg_loss:.4f}"})
+
+        if save_model and epoch % 10 == 0:
+            model.save(f"charGPT_{epoch}.pth")
 
 # ---------------------------
 # 3. Running Training
@@ -103,7 +133,7 @@ if __name__ == "__main__":
     Simple words lead to simple thoughts.
     复杂的词汇导致复杂的思维。
     難しい言葉は難しい考えにつながる。
-    """ * 100  # Repeat to create more training data
+    """  # Repeat to create more training data
 
     # Create dataset
     dataset = CharDataset(text_corpus, tokenizer, seq_length=25)
@@ -114,7 +144,7 @@ if __name__ == "__main__":
         emb_size=128,
         num_layers=2,
         num_heads=4,
-        max_seq_length=100
+        max_seq_length=25
     ).to(device)
 
     # Train model

@@ -148,5 +148,68 @@ def predict(trained_model_file_path, test_file_path):
 
     print("\nGenerated Message:\n", output)
 
+def save_model_and_config(model, tokenizer, save_path):
+    """Save both model weights and tokenizer configuration."""
+    # Save model weights
+    model.save(save_path)
+    
+    # Save tokenizer config
+    config = {
+        'vocab_size': tokenizer.vocab_size,
+        'char_to_id': tokenizer.char_to_id,
+        'id_to_char': tokenizer.id_to_char,
+        'special_tokens': tokenizer.special_tokens,
+        'languages': tokenizer.languages  # Add this to tokenizer class
+    }
+    config_path = save_path.replace('.pth', '_tokenizer.pt')
+    torch.save(config, config_path)
+
+def load_model_and_config(model_path):
+    """Load both model and tokenizer configuration."""
+    # Load tokenizer config
+    config_path = model_path.replace('.pth', '_tokenizer.pt')
+    config = torch.load(config_path)
+    
+    # Initialize tokenizer with saved config
+    tokenizer = PreTrainedCharTokenizer(languages=config['languages'])
+    tokenizer.char_to_id = config['char_to_id']
+    tokenizer.id_to_char = config['id_to_char']
+    tokenizer.special_tokens = config['special_tokens']
+    
+    # Initialize and load model
+    model = CharGPT.load_model(
+        model_path=model_path,
+        vocab_size=config['vocab_size'],
+        emb_size=128,
+        num_layers=2,
+        num_heads=4,
+        max_seq_length=100
+    )
+    
+    return model, tokenizer
+
 if __name__ == "__main__":
-    print("Run inference")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Load both model and tokenizer
+    model, tokenizer = load_model_and_config("charGPT_10.pth")
+    model = model.to(device)
+    
+    print(f"Loaded model vocabulary size: {model.token_embedding.weight.shape[0]}")
+    print(f"Loaded tokenizer vocabulary size: {tokenizer.vocab_size}")
+
+    # Test different inputs
+    test_inputs = [
+        "Simpl",
+        "你",
+        "The quick brow",
+        "世",
+    ]
+
+    for seed in test_inputs:
+        print(f"\nGenerating predictions for: '{seed}'")
+        output = predict_next_character(model, seed, tokenizer, device=device, top_k=3)
+        print("\nPredicted next characters:")
+        for char, prob in output:
+            print(f"'{char}': {prob:.4f}")

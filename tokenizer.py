@@ -1,6 +1,7 @@
 from transformers import CanineTokenizer
 import string
 import unicodedata
+import torch
 
 class CharTokenizer:
     def __init__(self, languages=['en']):
@@ -26,9 +27,10 @@ class CharTokenizer:
         # Initialize special tokens
         self.special_tokens = {
             "<PAD>": 0,
-            "<BOS>": 1,
-            "<EOS>": 2,
-            "<UNK>": 3,
+            "<UNK>": 1,
+            "<BOS>": 2,
+            "<EOS>": 3,
+            "<NEWLINE>": 4,  # Define a special token for newlines
         }
         
         # Initialize character sets
@@ -128,86 +130,40 @@ class CharTokenizer:
         # Create reverse mapping
         self.id_to_char = {v: k for k, v in self.char_to_id.items()}
         
-    def encode(self, text, add_special_tokens=True):
+    def encode(self, text):
         """Convert text to token ids."""
-        # First normalize to NFKC
-        text = unicodedata.normalize('NFKC', text)
-        
-        # Convert halfwidth spaces to fullwidth for CJK text
-        text = text.replace(' ', '\u3000')  # Replace ASCII space with ideographic space
-        
-        # Normalize punctuation for CJK
-        punctuation_map = {
-            ',': '，',
-            '.': '。',
-            '!': '！',
-            '?': '？',
-            ':': '：',
-            ';': '；',
-            '(': '（',
-            ')': '）',
-            '[': '［',
-            ']': '］',
-            '{': '｛',
-            '}': '｝',
-        }
-        for ascii_punct, full_punct in punctuation_map.items():
-            text = text.replace(ascii_punct, full_punct)
-        
-        # Debug: Print character codes
-        # print("\nInput text after normalization:")
-        # for char in text:
-        #     print(f"'{char}' (U+{ord(char):04X})")
         
         ids = []
-        if add_special_tokens:
-            ids.append(self.special_tokens["<BOS>"])
             
         for char in text:
-            ids.append(self.char_to_id.get(char, self.special_tokens["<UNK>"]))
-            
-        if add_special_tokens:
-            ids.append(self.special_tokens["<EOS>"])
+            if char == '\n':
+                token_id = self.special_tokens["<NEWLINE>"]  # Use the newline token
+            else:
+                token_id = self.char_to_id.get(char, self.special_tokens["<UNK>"])
+            ids.append(token_id)
+        
         return ids
     
     def decode(self, ids):
         """Convert token ids back to text."""
-        text = "".join(self.id_to_char.get(id, "<UNK>") for id in ids 
-                      if id not in [self.special_tokens["<PAD>"], 
-                                  self.special_tokens["<BOS>"], 
-                                  self.special_tokens["<EOS>"]])
+        text = ""
         
-        # Debug: Print character codes before any normalization
-        # print("\nOutput text before normalization:")
-        # for char in text:
-        #     print(f"'{char}' (U+{ord(char):04X})")
-        
-        # Don't normalize punctuation - NFKC is converting full-width to ASCII
-        # Instead, ensure ASCII punctuation is converted to full-width
-        punctuation_map = {
-            ',': '，',  # U+002C -> U+FF0C
-            '.': '。',  # U+002E -> U+3002
-            '!': '！',  # U+0021 -> U+FF01
-            '?': '？',  # U+003F -> U+FF1F
-            ':': '：',  # U+003A -> U+FF1A
-            ';': '；',  # U+003B -> U+FF1B
-            '(': '（',  # U+0028 -> U+FF08
-            ')': '）',  # U+0029 -> U+FF09
-            '[': '［',  # U+005B -> U+FF3B
-            ']': '］',  # U+005D -> U+FF3D
-            '{': '｛',  # U+007B -> U+FF5B
-            '}': '｝',  # U+007D -> U+FF5D
-        }
-        
-        # Convert any ASCII punctuation to full-width
-        for ascii_punct, full_punct in punctuation_map.items():
-            text = text.replace(ascii_punct, full_punct)
-        
-        # Debug: Print final character codes
-        # print("\nOutput text after conversion:")
-        # for char in text:
-        #     print(f"'{char}' (U+{ord(char):04X})")
-        
+        # Check if the input is a tensor and flatten it if necessary
+        if isinstance(ids, torch.Tensor):
+            ids = ids.flatten().tolist()  # Flatten the tensor and convert to list
+
+        for id in ids:
+            if id in [self.special_tokens["<PAD>"], 
+                       self.special_tokens["<BOS>"], 
+                       self.special_tokens["<EOS>"]]:
+                continue
+            
+            if id == self.special_tokens["<NEWLINE>"]:
+                text += '\n'  # Replace the newline token with an actual newline
+            else:
+                char = self.id_to_char.get(id, "<UNK>")
+                text += char
+            
         return text
     
     @property
@@ -246,14 +202,18 @@ class CharTokenizer:
 # Example usage
 if __name__ == "__main__":
     # Test with all languages
-    tokenizer = PreTrainedCharTokenizer(
+    tokenizer = CharTokenizer(
         languages=['en', 'zh', 'hi', 'es', 'ar', 'bn', 'pt', 'ur', 'id', 'fr', 'de', 'ja', 'emoji']
     )
     
     # Test texts
     texts = [
+        "Hello, World! ",
         "你好，世界！",           # Chinese
         "こんにちは世界！",       # Japanese
+        """复杂的词汇导致复杂的思维。
+        難しい言葉は難しい考えにつながる。
+        """
     ]
     
     # Test each text
